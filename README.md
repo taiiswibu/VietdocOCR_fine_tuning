@@ -1,6 +1,5 @@
 # VietDoc OCR
 
-**Vietnamese Handwriting Recognition & Local Document OCR Workbench**
 
 VietDoc OCR là ứng dụng OCR chạy local cho tài liệu tiếng Việt, hỗ trợ PDF có lớp văn bản, ảnh/PDF scan chữ in và chữ viết tay. Dự án kết hợp **PyMuPDF + EasyOCR + VietOCR**, có giao diện web local để kiểm tra bounding box, sửa kết quả OCR theo dòng, xuất TXT/Markdown/JSON/JSONL và chuẩn bị dữ liệu cho vector database.
 
