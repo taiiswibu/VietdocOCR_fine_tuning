@@ -1,0 +1,195 @@
+from pathlib import Path
+import os
+import numpy as np
+from .core import Block, normalize, reading_order
+
+
+def merge_line_boxes(boxes, columns=1, page_width=None):
+    """
+    Gom các word/fragment boxes thành từng dòng thực tế.
+
+    Ưu tiên:
+    - cùng cột
+    - gần nhau theo trục Y
+    - không phụ thuộc quá mạnh vào khoảng cách X
+
+    Phù hợp hơn với handwriting có khoảng trắng lớn giữa các từ.
+    """
+    if not boxes:
+        return []
+
+    boxes = [
+        [float(x0), float(y0), float(x1), float(y1)]
+        for x0, y0, x1, y1 in boxes
+    ]
+
+    # Chiều cao điển hình của chữ trên trang.
+    heights = [
+        max(1.0, b[3] - b[1])
+        for b in boxes
+    ]
+
+    median_h = float(np.median(heights))
+
+    # Sai số Y cho phép giữa các fragment cùng một dòng.
+    y_tolerance = max(
+        6.0,
+        median_h * 0.65
+    )
+
+    # Sắp xếp từ trên xuống, trái sang phải.
+    boxes.sort(
+        key=lambda b: (
+            (b[1] + b[3]) / 2,
+            b[0]
+        )
+    )
+
+    rows = []
+
+    for box in boxes:
+        x0, y0, x1, y1 = box
+
+        cy = (y0 + y1) / 2
+
+        if columns == 2 and page_width:
+            column = int(
+                ((x0 + x1) / 2) >= page_width / 2
+            )
+        else:
+            column = 0
+
+        best_row = None
+        best_distance = float("inf")
+
+        for row in rows:
+
+            if row["column"] != column:
+                continue
+
+            distance = abs(
+                cy - row["cy"]
+            )
+
+            # Chỉ quan tâm fragment nằm gần cùng hàng Y.
+            if distance <= y_tolerance:
+                if distance < best_distance:
+                    best_distance = distance
+                    best_row = row
+
+        if best_row is None:
+            rows.append({
+                "box": [x0, y0, x1, y1],
+                "cy": cy,
+                "count": 1,
+                "column": column,
+            })
+
+        else:
+            r = best_row["box"]
+
+            best_row["box"] = [
+                min(r[0], x0),
+                min(r[1], y0),
+                max(r[2], x1),
+                max(r[3], y1),
+            ]
+
+            best_row["cy"] = (
+                best_row["cy"]
+                * best_row["count"]
+                + cy
+            ) / (
+                best_row["count"] + 1
+            )
+
+            best_row["count"] += 1
+
+    # Sắp xếp dòng cuối cùng.
+    if columns == 2:
+        rows.sort(
+            key=lambda r: (
+                r["column"],
+                r["cy"]
+            )
+        )
+    else:
+        rows.sort(
+            key=lambda r: r["cy"]
+        )
+
+    return [
+        row["box"]
+        for row in rows
+    ]
+    
+    """Join nearby word detections into line crops; respect explicit columns.
+
+    This heuristic assumes reasonably horizontal lines, not arbitrary layouts.
+    """
+    rows=[]
+    for box in sorted(boxes,key=lambda b:((b[1]+b[3])/2,b[0])):
+        x0,y0,x1,y1=box;cy=(y0+y1)/2;h=y1-y0
+        column=int((x0+x1)/2>=page_width/2) if columns==2 and page_width else 0
+        candidates=[]
+        for row in rows:
+            r=row['box'];rh=r[3]-r[1]
+            overlap=min(y1,r[3])-max(y0,r[1])
+            gap=max(0,x0-r[2],r[0]-x1)
+            if row['column']==column and overlap>=.3*min(h,rh) and abs(cy-row['cy'])<=.55*max(h,rh) and gap<=2*max(h,rh):
+                candidates.append((abs(cy-row['cy']),row))
+        if candidates:
+            row=min(candidates,key=lambda pair:pair[0])[1];r=row['box']
+            row['cy']=(row['cy']*row['count']+cy)/(row['count']+1);row['count']+=1
+            row['box']=[min(x0,r[0]),min(y0,r[1]),max(x1,r[2]),max(y1,r[3])]
+        else:rows.append({'box':list(box),'cy':cy,'count':1,'column':column})
+    return [row['box'] for row in rows]
+
+
+class OCREngine:
+    def __init__(self,root: Path):
+        self.root=root; self.readers={};self.line_model=None
+
+    def reader(self,recognition=True):
+        if recognition not in self.readers:
+            try:
+                import easyocr
+            except ImportError as e:
+                raise RuntimeError('Chưa cài OCR. Chạy pip install -e ".[ocr]" theo README.') from e
+            self.readers[recognition]=easyocr.Reader(["vi","en"],gpu=False,recognizer=recognition,
+                model_storage_directory=str(self.root/"models"/"easyocr"),
+                download_enabled=False,verbose=False)
+        return self.readers[recognition]
+
+    def run(self,image,mode="printed",columns=1,single_line=False):
+        if mode=="printed":
+            result=self.reader(True).readtext(np.asarray(image),detail=1,paragraph=False,batch_size=1)
+            blocks=[]
+            for polygon,text,score in result:
+                p=np.asarray(polygon);box=[float(p[:,0].min()),float(p[:,1].min()),float(p[:,0].max()),float(p[:,1].max())]
+                blocks.append(Block(str(len(blocks)),box,normalize(text),"easyocr",float(score)))
+        else:
+            if self.line_model is None:
+                from .recognizer import LineRecognizer
+                self.line_model=LineRecognizer(self.root/"models"/"handwriting",os.getenv("VIETDOC_DEVICE","cpu"))
+            if single_line:
+                boxes=[[0,0,image.width,image.height]]
+            else:
+                horizontal,free=self.reader(False).detect(np.asarray(image),text_threshold=.6,low_text=.3,
+                    link_threshold=.3,canvas_size=2560,mag_ratio=1.0,min_size=8,
+                    slope_ths=.2,ycenter_ths=.5,height_ths=.5,width_ths=.5,add_margin=.08)
+                boxes=[[float(x0),float(y0),float(x1),float(y1)] for x0,x1,y0,y1 in horizontal[0]]
+                for polygon in free[0]:
+                    p=np.asarray(polygon);boxes.append([float(p[:,0].min()),float(p[:,1].min()),float(p[:,0].max()),float(p[:,1].max())])
+            boxes=merge_line_boxes(boxes,columns,image.width)
+            blocks=[]
+            for box in boxes:
+                x0,y0,x1,y1=[int(v) for v in box]
+                box=[max(0,x0),max(0,y0),min(image.width,x1),min(image.height,y1)]
+                if box[2]<=box[0] or box[3]<=box[1]:continue
+                text,score,truncated=self.line_model.predict(image.crop(box))
+                source="vietocr-truncated" if truncated else "vietocr"
+                blocks.append(Block(str(len(blocks)),box,normalize(text),source,score))
+        blocks=reading_order(blocks,columns,image.width)
+        for i,b in enumerate(blocks):b.id=f"b{i}"
+        return blocks

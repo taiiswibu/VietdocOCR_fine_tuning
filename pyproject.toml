@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vietdoc-ocr"
+version = "1.0.0"
+description = "Local Vietnamese handwriting OCR workbench with reproducible Kaggle fine-tuning"
+requires-python = ">=3.10,<3.13"
+dependencies = [
+  "fastapi==0.115.12", "uvicorn==0.34.2", "python-multipart==0.0.20",
+  "PyMuPDF==1.25.5", "Pillow==10.2.0", "numpy==1.26.4", "PyYAML==6.0.2"
+]
+[project.optional-dependencies]
+ocr = ["easyocr==1.7.2", "vietocr==0.3.13", "opencv-python-headless==4.11.0.86", "einops==0.2.0", "gdown==4.4.0", "requests>=2.32,<3"]
+train = ["datasets==3.6.0", "huggingface-hub==0.31.4", "tqdm==4.67.1"]
+test = ["pytest==8.3.5", "httpx==0.28.1"]
+vector = ["chromadb>=1.0,<2", "sentence-transformers>=4,<6"]
+[project.scripts]
+vietdoc = "vietdoc.cli:main"
+[tool.setuptools.packages.find]
+include = ["vietdoc*", "training*"]
+[tool.setuptools.package-data]
+vietdoc = ["static/*"]
+[tool.pytest.ini_options]
+testpaths = ["tests"]

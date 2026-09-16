@@ -1,0 +1,88 @@
+# =========================
+# Python environment
+# =========================
+.venv/
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Testing / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# =========================
+# Secrets / environment
+# =========================
+.env
+.env.*
+!.env.example
+
+# =========================
+# Project generated data
+# =========================
+workspace/
+data/
+runs/
+
+# =========================
+# Model weights
+# =========================
+models/*
+!models/README.md
+
+*.pth
+*.pt
+*.ckpt
+*.onnx
+
+# =========================
+# Training / generated bundles
+# =========================
+*.zip
+*.tar
+*.tar.gz
+
+# =========================
+# Python build
+# =========================
+build/
+dist/
+*.egg-info/
+
+# =========================
+# Jupyter
+# =========================
+.ipynb_checkpoints/
+
+# =========================
+# IDE
+# =========================
+.vscode/
+.idea/
+
+# =========================
+# OS files
+# =========================
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# =========================
+# Logs / temporary files
+# =========================
+*.log
+*.tmp
+*.temp
+~*
+
+# =========================
+# Example inputs
+# =========================
+examples/input/*
+!examples/input/README.md

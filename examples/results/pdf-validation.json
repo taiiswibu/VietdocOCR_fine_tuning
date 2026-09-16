@@ -1,0 +1,32 @@
+[
+  {
+    "file": "31-2024-qh15_1.pdf",
+    "pages": 94,
+    "native_pages": 93,
+    "blank_pages": 0,
+    "page_errors": 0,
+    "characters": 183271,
+    "seconds": 12.43,
+    "printed_ocr_pages": 1
+  },
+  {
+    "file": "31-2024-qh15_2.pdf",
+    "pages": 95,
+    "native_pages": 94,
+    "blank_pages": 0,
+    "page_errors": 0,
+    "characters": 189173,
+    "seconds": 10.67,
+    "printed_ocr_pages": 1
+  },
+  {
+    "file": "31-2024-qh15_3.pdf",
+    "pages": 66,
+    "native_pages": 66,
+    "blank_pages": 0,
+    "page_errors": 0,
+    "characters": 161206,
+    "seconds": 1.35,
+    "printed_ocr_pages": 0
+  }
+]

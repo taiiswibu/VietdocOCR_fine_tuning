@@ -1,0 +1,151 @@
+{
+  "processing_complete": true,
+  "schema_version": "1.0",
+  "document_id": "fc511b14ecf9a347e6f5031ccb2d97f05de0b5e475db067c61f2def2321c2750",
+  "filename": "handwriting-paper.png",
+  "pages": [
+    {
+      "number": 1,
+      "width": 428,
+      "height": 430,
+      "blocks": [
+        {
+          "id": "b0",
+          "bbox": [
+            12,
+            10,
+            132,
+            48
+          ],
+          "text": "NHẢY VIỆC",
+          "source": "vietocr",
+          "score": 0.9315429396099515,
+          "reviewed": false,
+          "original_text": null
+        },
+        {
+          "id": "b1",
+          "bbox": [
+            12,
+            53,
+            414,
+            115
+          ],
+          "text": "Cuộc đời làm công ty phải trải qua",
+          "source": "vietocr",
+          "score": 0.9300855100154877,
+          "reviewed": false,
+          "original_text": null
+        },
+        {
+          "id": "b2",
+          "bbox": [
+            11,
+            101,
+            413,
+            153
+          ],
+          "text": "vài ba lần \"nhảy việc để hiểu rằng",
+          "source": "vietocr",
+          "score": 0.9274848454138812,
+          "reviewed": false,
+          "original_text": null
+        },
+        {
+          "id": "b3",
+          "bbox": [
+            25,
+            143,
+            416,
+            191
+          ],
+          "text": "Ở đâu cũng cực như nhau, ở đâu",
+          "source": "vietocr",
+          "score": 0.9315404156843822,
+          "reviewed": false,
+          "original_text": null
+        },
+        {
+          "id": "b4",
+          "bbox": [
+            17,
+            183,
+            409,
+            229
+          ],
+          "text": "cũng đầy áp lực và mệt mỏi cả,",
+          "source": "vietocr",
+          "score": 0.9342628955841065,
+          "reviewed": false,
+          "original_text": null
+        },
+        {
+          "id": "b5",
+          "bbox": [
+            15,
+            219,
+            393,
+            267
+          ],
+          "text": "cái giá của việc kiếm tiền chưa",
+          "source": "vietocr",
+          "score": 0.9302427634116142,
+          "reviewed": false,
+          "original_text": null
+        },
+        {
+          "id": "b6",
+          "bbox": [
+            18,
+            259,
+            197,
+            305
+          ],
+          "text": "bao giờ là rẻ cả",
+          "source": "vietocr",
+          "score": 0.9317455850541592,
+          "reviewed": false,
+          "original_text": null
+        },
+        {
+          "id": "b7",
+          "bbox": [
+            13,
+            309,
+            355,
+            353
+          ],
+          "text": "Nhảy việc\" vài lần để nhận ra:",
+          "source": "vietocr",
+          "score": 0.9310904026031495,
+          "reviewed": false,
+          "original_text": null
+        },
+        {
+          "id": "b8",
+          "bbox": [
+            34,
+            346,
+            362,
+            384
+          ],
+          "text": "Muốn hết cực thì NGHỉ VIỆC\"",
+          "source": "vietocr",
+          "score": 0.9154058054641441,
+          "reviewed": false,
+          "original_text": null
+        }
+      ],
+      "method": "handwriting",
+      "edited_text": null,
+      "reviewed": false,
+      "error": null,
+      "seconds": 10.63,
+      "text": "NHẢY VIỆC\nCuộc đời làm công ty phải trải qua\nvài ba lần \"nhảy việc để hiểu rằng\nỞ đâu cũng cực như nhau, ở đâu\ncũng đầy áp lực và mệt mỏi cả,\ncái giá của việc kiếm tiền chưa\nbao giờ là rẻ cả\nNhảy việc\" vài lần để nhận ra:\nMuốn hết cực thì NGHỉ VIỆC\""
+    }
+  ],
+  "notes": [
+    "Scores OCR không phải xác suất chính xác đã hiệu chuẩn.",
+    "JSONL chứa text và metadata; chưa có embeddings."
+  ]
+}

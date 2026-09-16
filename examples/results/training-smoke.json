@@ -1,0 +1,11 @@
+{
+  "purpose": "functional smoke only; synthetic data; val/test shared intentionally; no accuracy claim",
+  "interrupted_at_update": 1,
+  "resumed_final_updates": 2,
+  "model_reload": true,
+  "bundle_verified": true,
+  "prediction": "nead",
+  "score": 0.734180711209774,
+  "truncated": false,
+  "torch": "2.5.1+cpu"
+}

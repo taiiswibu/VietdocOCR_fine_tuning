@@ -1,0 +1,11 @@
+## Trang 1
+
+NHẢY VIỆC
+Cuộc đời làm công ty phải trải qua
+vài ba lần "nhảy việc để hiểu rằng
+Ở đâu cũng cực như nhau, ở đâu
+cũng đầy áp lực và mệt mỏi cả,
+cái giá của việc kiếm tiền chưa
+bao giờ là rẻ cả
+Nhảy việc" vài lần để nhận ra:
+Muốn hết cực thì NGHỉ VIỆC"
