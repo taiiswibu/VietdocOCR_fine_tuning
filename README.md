@@ -138,7 +138,7 @@ vietdoc-ocr/
 ### 2. Clone repository
 
 ```powershell
-git clone https://github.com/<YOUR_GITHUB_USERNAME>/vietdoc-ocr.git
+git clone https://github.com/taiiswibu/VietdocOCR_fine_tuning
 cd vietdoc-ocr
 ```
 
@@ -252,8 +252,6 @@ Các metric chính:
 - **CER — Character Error Rate:** tỷ lệ lỗi theo ký tự, càng thấp càng tốt.
 - **WER — Word Error Rate:** tỷ lệ lỗi theo từ, càng thấp càng tốt.
 - **Exact Match:** tỷ lệ dòng được nhận dạng hoàn toàn chính xác, càng cao càng tốt.
-
-Không đưa số benchmark vào README nếu chưa lấy từ chính run đã thực hiện. Có thể thêm ảnh biểu đồ thật vào `docs/images/training-metrics.png`.
 
 ---
 
