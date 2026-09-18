@@ -29,12 +29,15 @@ def initial_weights(model,path):
     state=state.get("model",state.get("state_dict",state))
     target=model.state_dict()
     # New train-only characters are appended; existing character indices must never move.
+    added_classes=0
     for name in ("transformer.embed_tgt.weight","transformer.fc.weight","transformer.fc.bias"):
         if name in state and state[name].shape!=target[name].shape:
             old=state[name]
             if old.shape[0]>target[name].shape[0] or old.shape[1:]!=target[name].shape[1:]:raise ValueError("Vocab/checkpoint không tương thích")
             new=target[name].clone();new[:old.shape[0]]=old;state[name]=new
+            if name=="transformer.fc.bias":added_classes=new.shape[0]-old.shape[0]
     model.load_state_dict(state,strict=True)
+    return added_classes
 
 
 def validate(model,ds,vocab,device,max_samples):
@@ -53,6 +56,7 @@ def main():
     p.add_argument("--lr",type=float,default=1e-4);p.add_argument("--seed",type=int,default=42);p.add_argument("--device",default="cuda:0")
     p.add_argument("--val-samples",type=int,default=300);p.add_argument("--save-every",type=int,default=100);p.add_argument("--patience",type=int,default=3)
     p.add_argument("--max-updates",type=int,default=0,help="Diagnostic run; not a completed training run")
+    p.add_argument("--allow-large-vocab-expansion",action="store_true",help="Acknowledge >64 new output classes after auditing labels")
     a=p.parse_args()
     if min(a.epochs,a.batch_size,a.accum,a.save_every)<1:p.error("epochs, batch-size, accum, save-every phải >=1")
     if a.device.startswith("cuda") and not torch.cuda.is_available():p.error("Không có CUDA; bật GPU Kaggle hoặc --device cpu để smoke test")
@@ -76,7 +80,12 @@ def main():
         return max(.05,.5*(1+math.cos(math.pi*min(1,(step-warmup)/max(1,total_updates-warmup)))))
     scheduler=torch.optim.lr_scheduler.LambdaLR(optimizer,schedule)
     amp=a.device.startswith("cuda");scaler=torch.amp.GradScaler("cuda",enabled=amp)
-    start_epoch=next_batch=step=stale=0;best=float("inf")
+    start_epoch=next_batch=step=stale=0;best=float("inf");best_source="unset";added_classes=0
+    # Keep two selections separate:
+    # - best/model.pth: best deployment candidate, including the pretrained initialization.
+    # - best_finetuned/best-finetuned.pth: best checkpoint that actually received updates.
+    # This preserves a truthful before-vs-after research comparison even when fine-tuning regresses.
+    best_finetuned=float("inf");best_finetuned_source="unset"
     if a.resume:
         ck=torch.load(a.resume,map_location="cpu",weights_only=True)
         if ck["data_signature"]!=signature:raise ValueError("Manifest/config thay đổi so với checkpoint")
@@ -84,19 +93,36 @@ def main():
         model.load_state_dict(ck["model"]);optimizer.load_state_dict(ck["optimizer"])
         scheduler.load_state_dict(ck["scheduler"]);scaler.load_state_dict(ck["scaler"])
         start_epoch=ck["epoch"];next_batch=ck["next_batch"];step=ck["step"];best=ck["best_cer"];stale=ck["stale"]
+        best_source=ck.get("best_source","unknown-resumed-checkpoint")
+        best_finetuned=ck.get("best_finetuned_cer",float("inf"))
+        best_finetuned_source=ck.get("best_finetuned_source","unset")
         random.setstate(ck["python_rng"]);torch.set_rng_state(ck["torch_rng"])
         if amp and ck.get("cuda_rng"):torch.cuda.set_rng_state_all(ck["cuda_rng"])
         ns=ck["numpy_rng"];np.random.set_state((ns[0],np.array(ns[1],dtype=np.uint32),ns[2],ns[3],ns[4]))
     else:
         if not a.initial.exists():p.error("Thiếu initial pretrained checkpoint. Chạy python scripts/download_models.py --base trước.")
-        initial_weights(model,a.initial)
+        added_classes=initial_weights(model,a.initial)
+        if added_classes>64 and not a.allow_large_vocab_expansion:
+            raise ValueError(f"Output layer mở rộng {added_classes} lớp (>64). Audit preparation.json rồi chạy lại với --allow-large-vocab-expansion nếu hợp lệ.")
     metadata={**vars(a),"data_signature":signature,"torch":torch.__version__,"gpu":torch.cuda.get_device_name(0) if amp else "CPU","training_complete":False}
     (a.output/"run.json").write_text(json.dumps(metadata,default=str,indent=2),encoding="utf-8")
     (a.output/"config.yml").write_text(yaml.safe_dump(config,allow_unicode=True),encoding="utf-8")
+    if not a.resume:
+        # The pretrained initialization is a real candidate. Without this
+        # comparison, epoch 1 wins against infinity even after catastrophic
+        # degradation, which was the selection bug in the first experiment.
+        initial_scores=validate(model,val,vocab,a.device,a.val_samples)
+        initial_scores.update(source="pretrained-initialization",added_output_classes=added_classes)
+        (a.output/"initial-validation.json").write_text(json.dumps(initial_scores,indent=2),encoding="utf-8")
+        best=initial_scores["cer"];best_source="pretrained-initialization"
+        atomic_save(model.state_dict(),a.output/"model.pth")
+        print(json.dumps({"initial_validation":initial_scores}),flush=True)
     def checkpoint(epoch,batch):
         ns=np.random.get_state()
         atomic_save({"model":model.state_dict(),"optimizer":optimizer.state_dict(),"scheduler":scheduler.state_dict(),"scaler":scaler.state_dict(),
-                     "epoch":epoch,"next_batch":batch,"step":step,"best_cer":best,"stale":stale,"data_signature":signature,
+                     "epoch":epoch,"next_batch":batch,"step":step,"best_cer":best,"best_source":best_source,
+                     "best_finetuned_cer":best_finetuned,"best_finetuned_source":best_finetuned_source,
+                     "stale":stale,"data_signature":signature,
                      "run_shape":[a.batch_size,a.accum,a.epochs,a.seed],"python_rng":random.getstate(),"torch_rng":torch.get_rng_state(),
                      "cuda_rng":torch.cuda.get_rng_state_all() if amp else [],"numpy_rng":[ns[0],ns[1].tolist(),ns[2],ns[3],ns[4]]},a.output/"last.pt")
     optimizer.zero_grad(set_to_none=True)
@@ -127,17 +153,27 @@ def main():
                 if a.max_updates and step>=a.max_updates:
                     checkpoint(epoch,batch_i+1);print("Diagnostic limit reached. Resume last.pt; no final model claimed.");return
         scores=validate(model,val,vocab,a.device,a.val_samples)
-        row={"epoch":epoch+1,"updates":step,"train_loss":loss_sum/max(1,seen_batches),**scores}
+        row={"epoch":epoch+1,"updates":step,"train_loss":loss_sum/max(1,seen_batches),
+             "learning_rate":scheduler.get_last_lr()[0],**scores}
         with (a.output/"metrics.jsonl").open("a",encoding="utf-8") as out:out.write(json.dumps(row)+"\n")
         print(json.dumps(row),flush=True)
+        if scores["cer"]<best_finetuned:
+            best_finetuned=scores["cer"];best_finetuned_source=f"epoch-{epoch+1}"
+            atomic_save(model.state_dict(),a.output/"best-finetuned.pth")
+            stale=0
+        else:
+            stale+=1
         if scores["cer"]<best:
-            best=scores["cer"];stale=0;atomic_save(model.state_dict(),a.output/"model.pth")
-        else:stale+=1
+            best=scores["cer"];best_source=f"epoch-{epoch+1}";atomic_save(model.state_dict(),a.output/"model.pth")
         checkpoint(epoch+1,0);next_batch=0
         if stale>=a.patience:break
-    metadata.update(training_complete=True,best_validation_cer=best,updates=step)
+    metadata.update(training_complete=True,best_validation_cer=best,best_source=best_source,
+                    best_finetuned_validation_cer=best_finetuned,best_finetuned_source=best_finetuned_source,
+                    fine_tuned_improved=best_source.startswith("epoch-"),updates=step)
     (a.output/"run.json").write_text(json.dumps(metadata,default=str,indent=2),encoding="utf-8")
-    print("Done. Run training.evaluate on the held-out test for baseline AND fine-tuned checkpoint.")
+    if best_source=="pretrained-initialization":
+        print("Warning: no epoch beat the pretrained initialization on validation; packaged best remains the initialization.")
+    print("Done. Run training.evaluate on the held-out test for pretrained AND selected checkpoint.")
 
 
 if __name__=="__main__":main()
