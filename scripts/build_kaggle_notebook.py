@@ -18,21 +18,21 @@ def code(source):
 
 
 cells = [
-markdown(r"""# VietOCR × 5CD — Fine-tuning có thể tái lập trên Kaggle T4
+markdown(r"""# VietOCR × UIT-HWDB — Fine-tuning có thể tái lập trên Kaggle T4
 
 Notebook này thực hiện **một thí nghiệm mới hoàn toàn**:
 
 1. lấy checkpoint VietOCR pretrained gốc làm trạng thái **trước fine-tune**;
-2. fine-tune chính checkpoint đó trên train split của `5CD-AI/Viet-Handwriting-OCR-v2`;
+2. fine-tune chính checkpoint đó trên line-level subset của `blue7012/UIT_HWDB`;
 3. chọn epoch bằng validation CER;
 4. chỉ sau khi chọn model mới đánh giá hai checkpoint trên **cùng official test manifest**;
 5. báo cáo CER, whitespace-WER, Exact Match, khoảng tin cậy bootstrap và phân tích lỗi.
 
-> **Không dùng** `vudang449/vietocr-vietnamese-handwriting` hay bất kỳ model community nào làm đối chứng. Đây là phép so sánh paired: **VietOCR pretrained trước update** và **VietOCR do chính run này fine-tune trên 5CD**.
+> **Không dùng** model community đã fine-tune sẵn làm đối chứng. Đây là phép so sánh paired: **VietOCR pretrained trước update** và **VietOCR do chính run này fine-tune trên UIT-HWDB**.
 
 ### Câu hỏi nghiên cứu
 
-> Fine-tuning VietOCR pretrained trên train split của 5CD có cải thiện nhận dạng dòng chữ viết tay tiếng Việt trên official test split hay không?
+> Fine-tuning VietOCR pretrained trên UIT-HWDB có cải thiện nhận dạng dòng chữ viết tay tiếng Việt trên official-test line subset hay không?
 
 CER/WER càng thấp càng tốt; Exact Match càng cao càng tốt. Notebook không giả định fine-tune chắc chắn sẽ tốt hơn và không điền sẵn kết quả.
 """),
@@ -43,8 +43,8 @@ markdown(r"""## 0. Thiết kế thí nghiệm
 | Model trước fine-tune | VietOCR `vgg_transformer` pretrained, có revision và SHA-256 |
 | Model sau fine-tune | `best-finetuned.pth`: epoch đã nhận optimizer update và có validation CER thấp nhất |
 | Model triển khai | `model.pth`: tốt nhất giữa pretrained initialization và các epoch fine-tune |
-| Train/validation | Tách từ official train; cùng transcript chuẩn hóa không xuất hiện ở cả hai tập |
-| Test | Official test, giữ khóa đến khi đã chọn checkpoint |
+| Train/validation | Tách từ official train theo `writer_id`; một người viết chỉ thuộc một tập |
+| Test | Line-level subset của official test, giữ khóa đến khi đã chọn checkpoint |
 | Model selection | Validation CER; tuyệt đối không chọn epoch theo test |
 | So sánh cuối | Cùng test rows, cùng normalization, cùng device và decoder |
 | Seed | Ghi cố định trong config và provenance |
@@ -53,10 +53,14 @@ Việc giữ riêng `best-finetuned.pth` và `model.pth` rất quan trọng: n�
 """),
 code(r"""# ===== Experiment configuration: edit only this cell before a new run =====
 CFG = {
-    "dataset": "5CD-AI/Viet-Handwriting-OCR-v2",
+    "dataset": "blue7012/UIT_HWDB",
     "dataset_revision": "main",  # resolved to an immutable commit by prepare.py
+    "dataset_license": "cc-by-4.0",
     "seed": 42,
-    "val_fraction": 0.05,
+    "val_fraction": 0.10,
+    "group_column": "writer_id",
+    "max_label_length": 160,
+    "min_aspect_ratio": 1.2,
     "min_new_char_frequency": 5,
     "max_new_chars": 64,
     "epochs": 8,
@@ -67,13 +71,14 @@ CFG = {
     "validation_samples": 0,      # 0 = full validation set
     "save_every_updates": 100,
     "limit_train": 0,             # 0 = full train split; never use a limit for final results
-    "run_name": "vietocr_5cd_seed42_lr3e-5_v1",
+    "run_name": "vietocr_uithwdb_seed42_lr3e-5_v1",
     "bootstrap_repeats": 2000,
 }
 
 RUN_TRAINING = True
 RESUME_INTERRUPTED_RUN = False  # keep False for a genuinely fresh run
 PROJECT_INPUT = ""               # optional: /kaggle/input/<your-project-dataset>
+RESUME_INPUT = ""                # optional: /kaggle/input/<saved-notebook-output>
 REPO_URL = "https://github.com/taiiswibu/VietdocOCR_fine_tuning.git"
 
 assert CFG["limit_train"] == 0, "Final experiment must use the complete training split."
@@ -88,7 +93,7 @@ Khuyến nghị trên Kaggle:
 
 - Accelerator: **GPU T4**;
 - Internet: bật khi cài package/tải checkpoint;
-- Secret: `HF_TOKEN` read-only đã được cấp quyền truy cập dataset gated 5CD;
+- Dataset `blue7012/UIT_HWDB` là public; không cần `HF_TOKEN`;
 - Add Input: source project hiện tại để revision code không đổi giữa các lần chạy.
 
 Nếu không có source project trong Kaggle Input, cell dưới sẽ clone repository và ghi lại Git commit. Để tái lập chặt hơn, nên dùng Kaggle Dataset chứa source đã chốt.
@@ -172,19 +177,45 @@ print({
     "platform": platform.platform(),
 })
 """),
-code(r"""# Load the gated-dataset credential without printing it.
-if KAGGLE:
-    from kaggle_secrets import UserSecretsClient
-    os.environ["HF_TOKEN"] = UserSecretsClient().get_secret("HF_TOKEN")
-assert os.environ.get("HF_TOKEN"), "Create a read-only Kaggle Secret named HF_TOKEN."
-print("HF_TOKEN loaded:", bool(os.environ.get("HF_TOKEN")))
+code(r"""# Verify public dataset metadata; no token or gated access is required.
+from huggingface_hub import HfApi
+dataset_info = HfApi().dataset_info(CFG["dataset"], revision=CFG["dataset_revision"])
+print({"dataset": CFG["dataset"], "resolved_revision": dataset_info.sha, "private": dataset_info.private})
+assert not dataset_info.private
 """),
-code(r"""DATA_DIR = ROOT / "data" / f"5cd-seed{CFG['seed']}-val{int(CFG['val_fraction']*100)}"
+code(r"""DATA_DIR = ROOT / "data" / f"uit-hwdb-line-seed{CFG['seed']}-val{int(CFG['val_fraction']*100)}"
 RUN_DIR = ROOT / "runs" / CFG["run_name"]
 BASE_DIR = ROOT / "models" / "base"
 REPORT_DIR = ROOT / "runs" / f"{CFG['run_name']}-report"
 PLOT_DIR = REPORT_DIR / "plots"
 PLOT_DIR.mkdir(parents=True, exist_ok=True)
+
+# A new Kaggle session has an empty /kaggle/working. Restore both the exact
+# prepared data and training state from a saved notebook output before resume.
+if RESUME_INTERRUPTED_RUN and not (RUN_DIR / "last.pt").exists():
+    search_root = Path(RESUME_INPUT) if RESUME_INPUT else Path("/kaggle/input")
+    if not search_root.exists():
+        raise FileNotFoundError(f"RESUME_INPUT does not exist: {search_root}")
+    resume_candidates = list(search_root.rglob(f"runs/{CFG['run_name']}/last.pt"))
+    assert len(resume_candidates) == 1, (
+        "Cannot identify one resume checkpoint. Set RESUME_INPUT to the saved "
+        f"Kaggle output containing runs/{CFG['run_name']}/last.pt. Found: {resume_candidates}"
+    )
+    saved_checkpoint = resume_candidates[0]
+    saved_root = saved_checkpoint.parents[2]
+    saved_run = saved_checkpoint.parent
+    saved_data = saved_root / "data" / DATA_DIR.name
+    assert saved_data.exists(), (
+        "The saved output must contain the exact prepared data directory so the "
+        "data signature and immutable dataset revision remain unchanged."
+    )
+    if not DATA_DIR.exists():
+        DATA_DIR.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(saved_data, DATA_DIR)
+    if not RUN_DIR.exists():
+        RUN_DIR.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(saved_run, RUN_DIR)
+    print("Restored interrupted run from:", saved_root)
 
 print("DATA_DIR  =", DATA_DIR)
 print("RUN_DIR   =", RUN_DIR)
@@ -208,19 +239,19 @@ display(pd.DataFrame([{
     "sha256": base_sha,
 }]))
 """),
-markdown(r"""## 3. Chuẩn bị 5CD mà không làm rò rỉ test
+markdown(r"""## 3. Chuẩn bị UIT-HWDB line-level mà không làm rò rỉ test
 
 Quy trình chuẩn bị:
 
 - resolve `dataset_revision` thành commit bất biến;
 - NFC-normalize transcript, bỏ control characters và chuẩn hóa whitespace;
-- dành official test làm held-out test;
+- giữ official test riêng, rồi áp dụng cùng bộ lọc line-level đã khai báo;
 - loại ảnh RGB trùng lặp xuyên split bằng SHA-256;
-- tách train/validation theo hash của transcript chuẩn hóa;
+- tách train/validation theo hash của `writer_id` để hai tập không dùng cùng nét chữ;
 - chỉ học vocabulary bổ sung từ **train**, không nhìn test;
 - dừng nếu vocabulary tăng bất thường.
 
-Dataset là gated. Bạn phải đọc và chấp nhận điều kiện trên trang dataset trước khi chạy.
+Dataset card công bố CC BY 4.0 và không gated. Notebook lọc transcript dài quá 160 ký tự và ảnh không có tỷ lệ hình học giống một dòng; vì vậy benchmark cuối được gọi chính xác là **official-test line subset**, không phải toàn bộ mixed line/paragraph test.
 """),
 code(r"""required_manifests = [DATA_DIR / f"{name}.jsonl" for name in ("train", "val", "test")]
 if not all(path.exists() for path in required_manifests):
@@ -231,10 +262,14 @@ if not all(path.exists() for path in required_manifests):
         "--output", DATA_DIR,
         "--seed", CFG["seed"],
         "--val-fraction", CFG["val_fraction"],
+        "--group-column", CFG["group_column"],
+        "--max-label-length", CFG["max_label_length"],
+        "--min-aspect-ratio", CFG["min_aspect_ratio"],
         "--min-new-char-frequency", CFG["min_new_char_frequency"],
         "--max-new-chars", CFG["max_new_chars"],
         "--limit-train", CFG["limit_train"],
-        "--accept-noncommercial",
+        "--declared-license", CFG["dataset_license"],
+        "--accept-license",
     ]
     completed = subprocess.run([str(x) for x in cmd])
     if completed.returncode != 0:
@@ -247,8 +282,11 @@ else:
 """),
 code(r"""prep = json.loads((DATA_DIR / "preparation.json").read_text(encoding="utf-8"))
 assert prep["dataset"] == CFG["dataset"]
+assert prep["declared_license"] == CFG["dataset_license"]
 assert prep["seed"] == CFG["seed"]
 assert abs(prep["val_fraction"] - CFG["val_fraction"]) < 1e-12
+assert prep["group_column"] == CFG["group_column"]
+assert prep["line_filter"] == {"max_label_length": CFG["max_label_length"], "min_aspect_ratio": CFG["min_aspect_ratio"]}
 assert prep["limited_train"] == 0
 assert len(prep["appended_vocab"]) <= CFG["max_new_chars"], (
     "Vocabulary expansion exceeded the research guard. Audit appended_vocab_audit; "
@@ -260,12 +298,21 @@ summary = pd.DataFrame([{
     "resolved revision": prep["revision"],
     "train": prep["counts"].get("train", 0),
     "validation": prep["counts"].get("val", 0),
-    "official test": prep["counts"].get("test", 0),
+    "official-test line subset": prep["counts"].get("test", 0),
     "duplicates removed": prep["counts"].get("duplicates_removed", 0),
     "rejected": len(prep["rejected"]),
     "new vocabulary chars": len(prep["appended_vocab"]),
 }])
 display(summary)
+
+rejection_summary = (
+    pd.Series([item["reason"].split(":", 1)[0] for item in prep["rejected"]], name="reason")
+      .value_counts()
+      .rename_axis("reason")
+      .reset_index(name="count")
+)
+if len(rejection_summary):
+    display(rejection_summary)
 
 vocab_audit = pd.DataFrame(prep["appended_vocab_audit"])
 if len(vocab_audit):
@@ -273,9 +320,9 @@ if len(vocab_audit):
 else:
     print("No vocabulary expansion was required.")
 """),
-markdown(r"""### 3.1 Kiểm tra split và leakage
+markdown(r"""### 3.1 Kiểm tra split và writer leakage
 
-Official test không được dùng để chọn hyperparameter. Train/validation không được có cùng ảnh hoặc cùng transcript-group. Nếu một assertion thất bại, dừng thí nghiệm và sửa dữ liệu thay vì bỏ assertion.
+Official-test line subset không được dùng để chọn hyperparameter. Train, validation và test không được có cùng ảnh hoặc cùng `writer_id`. Nếu một assertion thất bại, dừng thí nghiệm và sửa dữ liệu thay vì bỏ assertion.
 """),
 code(r"""def read_jsonl(path):
     return [json.loads(line) for line in Path(path).read_text(encoding="utf-8").splitlines() if line.strip()]
@@ -289,18 +336,25 @@ assert not (sha["train"] & sha["val"])
 assert not (sha["train"] & sha["test"])
 assert not (sha["val"] & sha["test"])
 
-train_groups = {r["group"] for r in rows["train"]}
-val_groups = {r["group"] for r in rows["val"]}
-assert not (train_groups & val_groups), "Transcript-group leakage between train and validation."
+writers = {name: {r["writer_id"] for r in split_rows} for name, split_rows in rows.items()}
+assert not (writers["train"] & writers["val"]), "Writer leakage between train and validation."
+assert not (writers["train"] & writers["test"]), "Writer leakage between train and official test."
+assert not (writers["val"] & writers["test"]), "Writer leakage between validation and official test."
 assert all(r["source_split"] == "test" for r in rows["test"])
 
 integrity = pd.DataFrame([
     {"check": "Image SHA overlap train↔val", "value": len(sha["train"] & sha["val"]), "expected": 0},
     {"check": "Image SHA overlap train↔test", "value": len(sha["train"] & sha["test"]), "expected": 0},
     {"check": "Image SHA overlap val↔test", "value": len(sha["val"] & sha["test"]), "expected": 0},
-    {"check": "Transcript-group overlap train↔val", "value": len(train_groups & val_groups), "expected": 0},
+    {"check": "Writer overlap train↔val", "value": len(writers["train"] & writers["val"]), "expected": 0},
+    {"check": "Writer overlap train↔test", "value": len(writers["train"] & writers["test"]), "expected": 0},
+    {"check": "Writer overlap val↔test", "value": len(writers["val"] & writers["test"]), "expected": 0},
 ])
 display(integrity)
+display(pd.DataFrame([
+    {"split": name, "samples": len(rows[name]), "writers": len(writers[name])}
+    for name in ("train", "val", "test")
+]))
 """),
 markdown(r"""## 4. EDA chỉ trên train/validation
 
@@ -323,7 +377,7 @@ sns.histplot(data=eda, x="characters", hue="split", bins=50, element="step", sta
 axes[0].set_title("Độ dài transcript"); axes[0].set_xlabel("Số ký tự")
 sns.histplot(data=eda, x="words", hue="split", bins=35, element="step", stat="density", common_norm=False, ax=axes[1])
 axes[1].set_title("Số từ mỗi dòng"); axes[1].set_xlabel("Số từ")
-fig.suptitle("5CD train/validation — label distribution", fontweight="bold")
+fig.suptitle("UIT-HWDB line train/validation — label distribution", fontweight="bold")
 fig.tight_layout()
 fig.savefig(PLOT_DIR / "eda-label-lengths.png", dpi=180, bbox_inches="tight")
 plt.show()
@@ -377,7 +431,7 @@ Thiết lập mặc định cho T4:
 - early stopping theo validation CER;
 - checkpoint có optimizer, scheduler, scaler và RNG để resume đúng run bị ngắt.
 
-`RESUME_INTERRUPTED_RUN=False` đảm bảo lần đầu không dùng checkpoint cũ. Nếu Kaggle bị ngắt giữa chừng, save output rồi bật `RESUME_INTERRUPTED_RUN=True`; đó là tiếp tục cùng thí nghiệm, không phải một run mới.
+`RESUME_INTERRUPTED_RUN=False` đảm bảo lần đầu không dùng checkpoint cũ. Nếu Kaggle bị ngắt giữa chừng, hãy Save Version kèm output, add output đó làm Input ở session mới, đặt `RESUME_INPUT` tới input vừa add rồi bật `RESUME_INTERRUPTED_RUN=True`. Notebook sẽ phục hồi đồng thời prepared data và `last.pt`; đó là tiếp tục cùng thí nghiệm, không phải một run mới.
 """),
 code(r"""if RUN_TRAINING:
     if RESUME_INTERRUPTED_RUN:
@@ -492,10 +546,10 @@ fine_provenance = {
 (FINETUNED_DIR / "provenance.json").write_text(json.dumps(fine_provenance, ensure_ascii=False, indent=2), encoding="utf-8")
 display(pd.DataFrame([
     {"stage": "Before", "model": "VietOCR pretrained", "sha256": base_sha},
-    {"stage": "After", "model": f"Our 5CD fine-tune ({run_meta['best_finetuned_source']})", "sha256": fine_sha},
+    {"stage": "After", "model": f"Our UIT-HWDB fine-tune ({run_meta['best_finetuned_source']})", "sha256": fine_sha},
 ]))
 """),
-markdown(r"""## 8. Đánh giá cuối trên official test — cùng protocol
+markdown(r"""## 8. Đánh giá cuối trên official-test line subset — cùng protocol
 
 Đây là lần đầu official test được dùng để tính model metrics. Hai lệnh dùng đúng cùng `test.jsonl`. Notebook kiểm tra hash manifest, số mẫu và cờ `is_subset` trước khi cho phép so sánh.
 """),
@@ -522,7 +576,7 @@ assert fine_metrics["model_sha256"] == fine_sha
 
 display(pd.DataFrame([
     {"model": "VietOCR pretrained (before)", **{k: base_metrics[k] for k in ("samples", "cer", "wer_whitespace", "exact_match", "latency_p50", "latency_p95")}},
-    {"model": "Our VietOCR fine-tuned on 5CD (after)", **{k: fine_metrics[k] for k in ("samples", "cer", "wer_whitespace", "exact_match", "latency_p50", "latency_p95")}},
+    {"model": "Our VietOCR fine-tuned on UIT-HWDB (after)", **{k: fine_metrics[k] for k in ("samples", "cer", "wer_whitespace", "exact_match", "latency_p50", "latency_p95")}},
 ]).style.format({"cer": "{:.2%}", "wer_whitespace": "{:.2%}", "exact_match": "{:.2%}", "latency_p50": "{:.4f}", "latency_p95": "{:.4f}"}))
 """),
 markdown(r"""### 8.1 Paired bootstrap 95% confidence intervals
@@ -585,7 +639,7 @@ display(comparison.style.format({c: "{:.2%}" for c in comparison.columns if c !=
 code(r"""# Separate lower-is-better metrics from higher-is-better Exact Match.
 fig, axes = plt.subplots(1, 2, figsize=(14, 5.6), gridspec_kw={"width_ratios": [2, 1]})
 colors = ["#2563eb", "#f97316"]
-labels = ["VietOCR pretrained\n(before)", "Our 5CD fine-tune\n(after)"]
+labels = ["VietOCR pretrained\n(before)", "Our UIT-HWDB fine-tune\n(after)"]
 
 for metric_index, metric in enumerate(["CER", "WER"]):
     row = comparison.set_index("metric").loc[metric]
@@ -613,7 +667,7 @@ axes[1].set_ylabel("Percent")
 axes[1].set_title("Exact Match — higher is better")
 for xi, value in zip(x, values): axes[1].text(xi, value, f"{value:.2f}%", ha="center", va="bottom", fontsize=9)
 
-fig.suptitle("VietOCR before vs our VietOCR fine-tuned on 5CD\nOfficial held-out test · paired bootstrap 95% CI", fontsize=15, fontweight="bold")
+fig.suptitle("VietOCR before vs our VietOCR fine-tuned on UIT-HWDB\nOfficial-test line subset · paired bootstrap 95% CI", fontsize=15, fontweight="bold")
 fig.tight_layout()
 fig.savefig(PLOT_DIR / "pretrained-vs-our-finetuned.png", dpi=200, bbox_inches="tight")
 plt.show()
@@ -727,7 +781,7 @@ display(analysis.nlargest(10, "cer_delta")[["truth", "base_prediction", "fine_pr
 """),
 markdown(r"""## 10. Cách diễn giải kết quả
 
-- Nếu fine-tuned CER/WER giảm và Exact Match tăng, có thể nói run này cải thiện trên official held-out test — kèm số liệu và CI.
+- Nếu fine-tuned CER/WER giảm và Exact Match tăng, có thể nói run này cải thiện trên official-test line subset — kèm số liệu và CI.
 - Nếu metric trái chiều, báo cáo trade-off thay vì gọi chung là “accuracy tăng”.
 - Nếu fine-tuned kém hơn, đây vẫn là kết quả nghiên cứu hợp lệ. Kiểm tra training curves, vocabulary audit, learning rate, domain/style và error patterns.
 - Chỉ dùng validation để thiết kế run tiếp theo. Khi đã đổi hyperparameter dựa trên test, test không còn là đánh giá mù cho chuỗi thí nghiệm đó.
@@ -740,7 +794,7 @@ Bundle `handwriting-model.zip` chứa checkpoint **đã fine-tune** tốt nhất
 """),
 code(r"""REPORT_DIR.mkdir(parents=True, exist_ok=True)
 comparison_payload = {
-    "experiment": "VietOCR pretrained vs our VietOCR fine-tuned on 5CD",
+    "experiment": "VietOCR pretrained vs our VietOCR fine-tuned on UIT-HWDB",
     "verdict": verdict,
     "config": CFG,
     "code_commit": git_commit,
@@ -795,7 +849,8 @@ display(FileLink(str(REPORT_DIR / "comparison.json")))
 markdown(r"""## Tài liệu phương pháp
 
 - [VietOCR — repository chính thức](https://github.com/pbcquoc/vietocr): kiến trúc Transformer OCR, format annotation và pretrained model.
-- [5CD Vietnamese Handwriting OCR v2](https://huggingface.co/datasets/5CD-AI/Viet-Handwriting-OCR-v2): dataset card, điều kiện truy cập và thông tin phiên bản dữ liệu.
+- [UIT-HWDB trên Hugging Face](https://huggingface.co/datasets/blue7012/UIT_HWDB): dataset card, schema, split, writer ID và giấy phép công bố.
+- [Bài báo UIT-HWDB](https://arxiv.org/abs/2211.05407): phương pháp xây dựng và benchmark dữ liệu chữ viết tay tiếng Việt.
 - [PyTorch Automatic Mixed Precision](https://docs.pytorch.org/docs/stable/notes/amp_examples.html): `autocast` và gradient scaling.
 - [PyTorch Reproducibility](https://docs.pytorch.org/docs/stable/notes/randomness.html): seed, deterministic algorithms và giới hạn tái lập giữa môi trường.
 
@@ -813,7 +868,7 @@ markdown(r"""## Checklist trước khi đưa lên GitHub/CV
 
 Một câu CV trung thực có thể dùng sau khi có kết quả:
 
-> Built a reproducible VietOCR fine-tuning and paired evaluation pipeline on the gated 5CD Vietnamese handwriting dataset, with leakage checks, checkpoint provenance, CER/WER/Exact Match, bootstrap confidence intervals, and qualitative error analysis.
+> Built a reproducible VietOCR fine-tuning and paired evaluation pipeline on the public UIT-HWDB Vietnamese handwriting dataset, with writer-disjoint splits, line-level filtering, checkpoint provenance, CER/WER/Exact Match, bootstrap confidence intervals, and qualitative error analysis.
 """),
 ]
 
