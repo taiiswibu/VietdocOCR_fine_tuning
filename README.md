@@ -1,11 +1,18 @@
 # VietDoc OCR
 
+VietDoc OCR là ứng dụng OCR chạy local cho tài liệu tiếng Việt, hỗ trợ PDF có lớp văn bản, ảnh/PDF scan chữ in và chữ viết tay. Dự án dùng **PyMuPDF + EasyOCR + PyTorch**, có giao diện web local để kiểm tra bounding box, sửa kết quả OCR theo dòng, xuất TXT/Markdown/JSON/JSONL và chuẩn bị dữ liệu cho vector database / RAG.
 
-VietDoc OCR là ứng dụng OCR chạy local cho tài liệu tiếng Việt, hỗ trợ PDF có lớp văn bản, ảnh/PDF scan chữ in và chữ viết tay. Dự án kết hợp **PyMuPDF + EasyOCR + VietOCR**, có giao diện web local để kiểm tra bounding box, sửa kết quả OCR theo dòng, xuất TXT/Markdown/JSON/JSONL và chuẩn bị dữ liệu cho vector database.
-
-Phần chữ viết tay sử dụng VietOCR và đã được **fine-tune trên Kaggle T4 với dataset 5CD**, sau đó checkpoint được đưa về ứng dụng local để inference.
+Phần nghiên cứu chữ viết tay hiện dùng **EasyOCR Latin Gen2 (`latin_g2.pth`) làm baseline**, sau đó fine-tune recognizer trên **UIT-HWDB** bằng Kaggle T4. Đây là phép so sánh cùng kiến trúc, cùng decoder và cùng quy trình đánh giá: **EasyOCR pretrained → chính checkpoint đó sau fine-tune**.
 
 > Mục tiêu của project là xây một pipeline OCR có thể kiểm tra, hiệu chỉnh và tái sử dụng dữ liệu — không giả định OCR chữ viết tay luôn chính xác 100%.
+
+## Trạng thái hiện tại
+
+- ✅ Pipeline OCR local: PDF text layer, printed OCR, review/edit, export.
+- ✅ Experiment fine-tune EasyOCR trên UIT-HWDB đã chạy hoàn chỉnh.
+- ✅ Best validation checkpoint của run 24 epoch đã được lưu.
+- ✅ Notebook tạo package research, package deployment và experiment report.
+- ⚠️ **Chỉ ghi "đã deploy model fine-tuned vào app" sau khi package `viet_handwriting.{pth,yaml,py}` được tích hợp vào runtime local.** Nếu branch hiện tại chưa thay loader handwriting, README này vẫn mô tả phần fine-tuning là research/deployment-ready chứ không khẳng định runtime đã dùng checkpoint mới.
 
 ---
 
@@ -24,9 +31,23 @@ Phần chữ viết tay sử dụng VietOCR và đã được **fine-tune trên 
 
 ![Region OCR demo](docs/images/4.png)
 
-### 4. Fine-tuning / đánh giá model
+### 4. Training curves — EasyOCR fine-tuning
 
-![Fine-tuning metrics](docs/images/5.png)
+Biểu đồ theo dõi CTC loss và các metric validation trong quá trình fine-tune 24 epoch.
+
+![EasyOCR training curves](docs/images/5.png)
+
+### 5. EasyOCR pretrained vs fine-tuned
+
+So sánh trực tiếp EasyOCR Latin Gen2 pretrained với checkpoint fine-tuned trên cùng tập test đã lọc.
+
+![EasyOCR pretrained vs fine-tuned](docs/images/6.png)
+
+### 6. Paired error analysis
+
+Phân tích theo từng sample để xem mức thay đổi CER sau fine-tuning và các trường hợp cải thiện / suy giảm.
+
+![Paired CER error analysis](docs/images/7.png)
 
 ---
 
@@ -34,18 +55,21 @@ Phần chữ viết tay sử dụng VietOCR và đã được **fine-tune trên 
 
 - Đọc trực tiếp **text layer của PDF** bằng PyMuPDF khi tài liệu đã có văn bản machine-readable.
 - OCR ảnh/PDF scan chữ in Việt + Anh bằng **EasyOCR**.
-- OCR chữ viết tay bằng **CRAFT/EasyOCR detector + VietOCR recognizer**.
+- Detect text bằng **CRAFT / EasyOCR detector**.
+- Gom các box gần nhau thành dòng trước khi nhận dạng chữ viết tay.
 - Chế độ **Ảnh một dòng / OCR vùng** để bypass detector và đánh giá trực tiếp recognizer.
 - Bounding box theo dòng, xem confidence, sửa nhãn thủ công và đánh dấu reviewed.
 - Export **TXT / Markdown / JSON / JSONL / Training ZIP**.
 - Chunk dữ liệu kèm metadata để dùng cho vector database / RAG pipeline.
-- Fine-tuning VietOCR trên Kaggle T4 với train/validation/test, checkpoint/resume và CER/WER evaluation.
-- Local-first: sau khi tải model, luồng OCR không cần gọi API OCR bên ngoài.
-- Automated tests: **12 tests passed** trên bản project đã kiểm tra.
+- Fine-tuning **EasyOCR Latin Gen2 VGG-BiLSTM-CTC** trên Kaggle T4.
+- Writer-disjoint train/validation split, image-hash leakage check, CER/WER/Exact Match và paired bootstrap confidence interval.
+- Local-first: sau khi model đã có trên máy, luồng OCR không cần gọi API OCR bên ngoài.
 
 ---
 
 ## Kiến trúc
+
+### Luồng OCR
 
 ```mermaid
 flowchart TD
@@ -59,7 +83,7 @@ flowchart TD
 
     B -->|Chữ viết tay| E[CRAFT / EasyOCR Detection]
     E --> F[Merge boxes thành từng dòng]
-    F --> G[VietOCR Fine-tuned Recognizer]
+    F --> G[Handwriting Recognizer]
     G --> H
 
     H --> I[Review / chỉnh sửa theo dòng]
@@ -68,16 +92,234 @@ flowchart TD
     J --> L[Vector DB / RAG]
 ```
 
+### Handwriting recognizer
+
+Research/deployment target hiện tại là custom EasyOCR recognizer:
+
+```text
+EasyOCR Latin Gen2 pretrained
+        ↓
+VGG FeatureExtraction
+        ↓
+2 × BiLSTM SequenceModeling
+        ↓
+CTC Prediction
+```
+
+Trong experiment hiện tại:
+
+- giữ nguyên kiến trúc EasyOCR Latin Gen2;
+- freeze `FeatureExtraction`;
+- fine-tune `SequenceModeling` + `Prediction`;
+- dùng CTC loss;
+- chọn best checkpoint theo validation CER.
+
+EasyOCR hỗ trợ custom recognition model bằng bộ ba file cùng basename:
+
+```text
+viet_handwriting.pth
+viet_handwriting.yaml
+viet_handwriting.py
+```
+
 ### Fine-tuning workflow
 
 ```mermaid
 flowchart LR
-    A[Pretrained VietOCR] --> B[5CD Handwriting Dataset]
-    B --> C[Fine-tune trên Kaggle T4]
-    C --> D[Validation CER / WER]
-    D --> E[Best checkpoint]
-    E --> F[handwriting-model.zip]
-    F --> G[Deploy về local app]
+    A[EasyOCR latin_g2 pretrained] --> B[UIT-HWDB public mirror]
+    B --> C[Line-like filtering]
+    C --> D[Writer-disjoint train / validation]
+    D --> E[Baseline epoch 0]
+    E --> F[Fine-tune BiLSTM + CTC head]
+    F --> G[Validation CER selection]
+    G --> H[Best fine-tuned checkpoint]
+    H --> I[Same filtered published-test subset]
+    I --> J[CER / WER / Exact Match]
+    J --> K[Paired bootstrap 95% CI]
+    K --> L[Deployment package]
+```
+
+---
+
+## Dataset: UIT-HWDB
+
+Experiment dùng public Hugging Face mirror:
+
+- `blue7012/UIT_HWDB`
+- language: Vietnamese
+- license metadata: **CC-BY-4.0**
+- fields: `image`, `text`, `writer_id`, `image_id`
+- published mirror split:
+  - train: **8,141 samples / 249 writers**
+  - test: **232 samples / 6 writers**
+
+Mirror này kết hợp **line-level và paragraph-level handwriting**, vì vậy notebook không giả định mọi sample đều là một dòng. Experiment lọc **line-like samples** bằng cùng policy đã khóa trong config:
+
+```python
+max_label_length = 160
+min_aspect_ratio = 1.2
+```
+
+Sau filtering:
+
+- published train được chia train/validation theo `writer_id` với seed 42;
+- validation fraction: 10%;
+- writer overlap giữa train/validation/test phải bằng 0;
+- exact decoded-image duplicates được kiểm tra bằng SHA-256;
+- published test chỉ được dùng ở giai đoạn đánh giá cuối;
+- run hiện tại có **201 mẫu** trong filtered published-test subset.
+
+Nguồn:
+
+- Hugging Face mirror: https://huggingface.co/datasets/blue7012/UIT_HWDB
+- UIT-HWDB original repository: https://github.com/nghiangh/UIT-HWDB-dataset
+- Paper: *UIT-HWDB: Using Transferring Method to Construct A Novel Benchmark for Evaluating Unconstrained Handwriting Image Recognition in Vietnamese*, RIVF 2022.
+
+Dataset gốc công bố:
+
+| Subset | Số ảnh |
+|---|---:|
+| UIT-HWDB-word | 110,745 |
+| UIT-HWDB-line | 7,273 |
+| UIT-HWDB-paragraph | 1,144 |
+
+### EDA của tập dữ liệu dùng cho experiment
+
+Notebook có bước kiểm tra phân bố transcript length và aspect ratio trước khi train. Ảnh này giúp giải thích policy lọc `line-like samples` thay vì coi toàn bộ UIT-HWDB là dữ liệu một dòng.
+
+![UIT-HWDB dataset EDA](docs/images/8.png)
+
+---
+
+## Experiment EasyOCR × UIT-HWDB
+
+Notebook chính:
+
+```text
+notebooks/02-kaggle-finetune-easyocr-uit-hwdb.ipynb
+```
+
+Baseline:
+
+```text
+EasyOCR 1.7.2
+latin_g2.pth
+VGG-BiLSTM-CTC
+```
+
+Cấu hình run hiện tại:
+
+```text
+seed                = 42
+validation fraction = 0.10
+image size          = 64 × 1024
+batch size          = 16
+gradient accumulation = 2
+effective batch     = 32
+learning rate       = 3e-5
+weight decay        = 1e-4
+max epochs          = 24
+early-stop patience = 3
+GPU                 = Kaggle T4
+```
+
+### Model selection
+
+Model selection chỉ dùng **validation CER**.
+
+Run 24 epoch hiện tại:
+
+| Checkpoint | Validation CER ↓ |
+|---|---:|
+| EasyOCR pretrained / epoch 0 | 61.40% |
+| Best fine-tuned / epoch 24 | **21.25%** |
+
+Validation CER giảm khoảng **40.16 điểm phần trăm**, tương đương khoảng **65.4% relative error reduction** so với pretrained baseline trên validation split của experiment này.
+
+Best epoch 24 còn có:
+
+```text
+Validation WER         ≈ 58.68%
+Validation Exact Match ≈ 0.72%
+```
+
+> **Không dùng các số test từ run 12 epoch cũ cho README.** Final test metrics của run 24 phải được lấy trực tiếp từ `comparison.json` trong `easyocr-experiment-report.zip` để tránh báo cáo số stale/sai run.
+
+### Metric
+
+- **CER — Character Error Rate:** càng thấp càng tốt.
+- **WER — Word Error Rate:** càng thấp càng tốt.
+- **Exact Match:** tỷ lệ sample đúng hoàn toàn, càng cao càng tốt.
+- **Paired bootstrap 95% CI:** resample cùng test rows để ước lượng uncertainty của chênh lệch `fine-tuned - pretrained`.
+
+Với CER/WER:
+
+```text
+delta < 0  → fine-tuned tốt hơn
+```
+
+Với Exact Match:
+
+```text
+delta > 0  → fine-tuned tốt hơn
+```
+
+---
+
+## Artifact sinh ra sau training
+
+Notebook tạo 3 package chính:
+
+```text
+easyocr-handwriting-research-finetuned.zip
+easyocr-handwriting-deployment-selected.zip
+easyocr-experiment-report.zip
+```
+
+### `easyocr-handwriting-research-finetuned.zip`
+
+Checkpoint fine-tuned tốt nhất trong các epoch optimizer-updated. Dùng để lưu bằng chứng experiment, kể cả khi nó không phải checkpoint deploy cuối cùng.
+
+### `easyocr-handwriting-deployment-selected.zip`
+
+Checkpoint có validation CER tốt nhất giữa baseline và các epoch fine-tuned. Đây là package dùng để tích hợp local app.
+
+Deployment layout:
+
+```text
+models/
+└── easyocr/
+    ├── viet_handwriting.pth
+    └── user/
+        ├── viet_handwriting.yaml
+        └── viet_handwriting.py
+```
+
+EasyOCR custom model được khởi tạo theo API chính thức:
+
+```python
+import easyocr
+
+reader = easyocr.Reader(
+    ["vi", "en"],
+    recog_network="viet_handwriting",
+    model_storage_directory="models/easyocr",
+    user_network_directory="models/easyocr/user",
+    gpu=False,
+)
+```
+
+### `easyocr-experiment-report.zip`
+
+Report giữ các artifact phục vụ reproducibility, ví dụ:
+
+```text
+comparison.json
+history.json
+predictions / test outputs
+error analysis
+training / evaluation plots
+provenance metadata
 ```
 
 ---
@@ -87,14 +329,15 @@ flowchart LR
 | Thành phần | Công nghệ |
 |---|---|
 | Backend | Python, FastAPI, Uvicorn |
-| PDF | PyMuPDF |
+| PDF text extraction | PyMuPDF |
 | Printed OCR | EasyOCR |
 | Handwriting detector | CRAFT / EasyOCR |
-| Handwriting recognizer | VietOCR, PyTorch |
-| Fine-tuning | PyTorch, Kaggle T4 |
+| Handwriting recognizer research | EasyOCR Latin Gen2 custom recognizer |
+| Recognition architecture | VGG + BiLSTM + CTC |
+| Training | PyTorch, AMP, AdamW, Kaggle T4 |
 | Dataset pipeline | Hugging Face Datasets |
 | UI | HTML, CSS, JavaScript |
-| Evaluation | CER, WER, Exact Match |
+| Evaluation | CER, WER, Exact Match, paired bootstrap CI |
 | Vector export | JSONL, optional ChromaDB |
 
 ---
@@ -103,15 +346,19 @@ flowchart LR
 
 ```text
 vietdoc-ocr/
-├── configs/                 # cấu hình VietOCR
-├── docs/                    # architecture, Kaggle, validation, portfolio
-│   └── images/              # ảnh demo dùng trong README
-├── examples/                # input / output mẫu
-├── models/                  # model local (weights không commit lên Git)
-├── notebooks/               # notebook fine-tune Kaggle
-├── scripts/                 # download model, package, compare metrics...
-├── tests/                   # automated tests
-├── training/                # prepare / train / evaluate
+├── configs/                     # config/legacy experiment files nếu còn dùng
+├── docs/
+│   └── images/                  # ảnh demo / metric dùng trong README
+├── examples/                    # input / output mẫu
+├── models/                      # weights local, không commit mặc định
+│   └── easyocr/
+│       └── user/                # custom EasyOCR .yaml / .py
+├── notebooks/
+│   ├── 01_kaggle_finetune.ipynb                # legacy experiment
+│   └── 02-kaggle-finetune-easyocr-uit-hwdb.ipynb
+├── scripts/
+├── tests/
+├── training/                    # legacy/research utilities nếu còn dùng
 ├── vietdoc/
 │   ├── core.py
 │   ├── engines.py
@@ -138,8 +385,8 @@ vietdoc-ocr/
 ### 2. Clone repository
 
 ```powershell
-git clone https://github.com/taiiswibu/VietdocOCR_fine_tuning
-cd vietdoc-ocr
+git clone https://github.com/taiiswibu/VietdocOCR_fine_tuning.git
+cd VietdocOCR_fine_tuning
 ```
 
 ### 3. Tạo virtual environment
@@ -161,13 +408,17 @@ py -3.11 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[ocr,train,test]"
 ```
 
-### 6. Tải model
+### 6. Đặt custom handwriting model
 
-```powershell
-.\.venv\Scripts\python.exe scripts\download_models.py --all
+Nếu dùng package deployment fine-tuned, giải nén và đặt:
+
+```text
+models/easyocr/viet_handwriting.pth
+models/easyocr/user/viet_handwriting.yaml
+models/easyocr/user/viet_handwriting.py
 ```
 
-> `models/` được `.gitignore` để tránh commit model weights lớn hoặc checkpoint có ràng buộc license. Nếu sử dụng checkpoint fine-tuned riêng, đặt `model.pth` và `config.yml` vào `models/handwriting/`.
+Theo EasyOCR, file `.pth`, `.yaml` và `.py` của custom recognizer phải cùng basename để có thể chọn bằng `recog_network`.
 
 ### 7. Chạy test
 
@@ -181,7 +432,7 @@ py -3.11 -m venv .venv
 .\.venv\Scripts\python.exe -m vietdoc.cli serve
 ```
 
-Mở trình duyệt:
+Mở:
 
 ```text
 http://127.0.0.1:8000
@@ -193,81 +444,58 @@ http://127.0.0.1:8000
 
 ### PDF có text layer
 
-Chọn **Tự động / chữ in**. Nếu PDF đã có text layer, app ưu tiên PyMuPDF thay vì OCR để tăng tốc và giữ độ chính xác.
+Chọn **Tự động / chữ in**. Nếu PDF có text layer, app ưu tiên PyMuPDF thay vì OCR.
 
 ### Ảnh / PDF scan chữ in
 
-Chọn **Tự động / chữ in** hoặc **Buộc OCR chữ in Việt / Anh**. EasyOCR sẽ detect và recognize nội dung.
+Dùng EasyOCR detector + recognizer chuẩn cho tài liệu in Việt/Anh.
 
 ### Chữ viết tay
 
-Chọn **Chữ viết tay**:
+Pipeline mục tiêu:
 
 ```text
-Image
-  -> CRAFT/EasyOCR detect text fragments
-  -> merge fragments theo dòng
-  -> crop từng dòng
-  -> VietOCR fine-tuned
-  -> sort reading order
-  -> text output
+Image / rendered PDF page
+        ↓
+CRAFT / EasyOCR detection
+        ↓
+merge fragments thành dòng
+        ↓
+crop từng dòng
+        ↓
+EasyOCR custom handwriting recognizer
+        ↓
+sort reading order
+        ↓
+review / correction
+        ↓
+text output
 ```
 
 ### OCR vùng / một dòng
 
-Khoanh đúng một dòng rồi chạy OCR vùng. Chế độ này đưa crop trực tiếp vào VietOCR và hữu ích để tách lỗi **detector** khỏi lỗi **recognizer**.
+Crop một dòng được đưa thẳng vào handwriting recognizer. Chế độ này giúp tách lỗi **detection/line grouping** khỏi lỗi **recognition**.
 
 ---
 
-## Fine-tune VietOCR trên Kaggle T4
+## Giới hạn
 
-Notebook:
+Kết quả notebook hiện tại đánh giá **recognizer trên line-like crops**. Nó chưa phải benchmark end-to-end cho toàn trang.
 
-```text
-notebooks/01_kaggle_finetune.ipynb
-```
+Chất lượng thực tế còn phụ thuộc vào:
 
-Pipeline:
-
-```text
-Pretrained VietOCR
-        +
-5CD Vietnamese handwriting dataset
-        ↓
-Training / validation trên Kaggle T4
-        ↓
-CER / WER evaluation
-        ↓
-Best checkpoint
-        ↓
-handwriting-model.zip
-        ↓
-Deploy về models/handwriting/
-```
-
-### Đánh giá
-
-Các metric chính:
-
-- **CER — Character Error Rate:** tỷ lệ lỗi theo ký tự, càng thấp càng tốt.
-- **WER — Word Error Rate:** tỷ lệ lỗi theo từ, càng thấp càng tốt.
-- **Exact Match:** tỷ lệ dòng được nhận dạng hoàn toàn chính xác, càng cao càng tốt.
-
----
-
-## Kết quả và giới hạn
-
-Fine-tuning giúp recognizer thích nghi tốt hơn với handwriting tiếng Việt, nhưng độ chính xác thực tế vẫn phụ thuộc vào:
-
-- phong cách chữ viết của từng người;
+- detector có tìm đúng vùng chữ không;
+- thuật toán merge box có gom đúng từng dòng không;
+- crop có cắt mất dấu tiếng Việt không;
 - chữ nối nét / chữ nghiêng;
-- dấu tiếng Việt nhỏ;
-- chất lượng ảnh, ánh sáng, blur;
+- handwriting style ngoài domain UIT-HWDB;
+- blur, ánh sáng, perspective;
 - giấy ô ly / đường nền;
-- detector cắt hoặc gộp sai dòng;
-- domain gap giữa dữ liệu fine-tune và ảnh ngoài thực tế.
+- paragraph hoặc layout phức tạp.
 
-Vì vậy ứng dụng hỗ trợ **human review + chỉnh sửa theo dòng** thay vì giả định OCR chữ viết tay luôn chính xác 100%.
+Muốn báo cáo end-to-end detector + recognizer cần một tập ảnh trang có ground-truth bounding boxes / reading order phù hợp.
+
+Vì vậy app vẫn giữ **human review + chỉnh sửa theo dòng** thay vì giả định OCR luôn chính xác 100%.
 
 ---
 
@@ -283,7 +511,7 @@ Chunks JSONL
 Training ZIP
 ```
 
-JSONL có thể dùng làm đầu vào cho embedding/vector database. Project có script import ChromaDB tùy chọn:
+JSONL có thể làm đầu vào cho embedding/vector database. Nếu dùng ChromaDB:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -e ".[vector]"
@@ -292,34 +520,44 @@ JSONL có thể dùng làm đầu vào cho embedding/vector database. Project c�
 
 ---
 
-## Không commit các dữ liệu sau
+## Không commit dữ liệu nhạy cảm / artifact lớn
 
-`.gitignore` đã loại các thành phần quan trọng:
+Nên giữ ngoài Git:
 
 ```text
 .venv/
 workspace/
 data/
 runs/
-models/*
+models/*.pth
+models/**/*.pth
 .env
 ```
 
-Không push lên repository:
+Không push:
 
-- `HF_TOKEN`, API key hoặc password;
-- dataset 5CD gated;
-- checkpoint/model nếu chưa kiểm tra license;
-- tài liệu cá nhân hoặc tài liệu không có quyền công khai;
-- file trong `workspace/` chứa OCR của người dùng.
+- token, API key, password;
+- raw UIT-HWDB images hoặc cache dataset;
+- Kaggle run directories;
+- checkpoint `.pth` nếu chưa quyết định rõ cách phân phối;
+- tài liệu OCR của người dùng;
+- dữ liệu cá nhân hoặc tài liệu không có quyền công khai.
 
-Xem thêm `NOTICE.md` trước khi phân phối model/data.
-
+Không còn cần `HF_TOKEN` cho experiment UIT-HWDB public hiện tại.
 
 ---
 
 ## License & attribution
 
-Source code của project có license trong `LICENSE`. Dataset/model bên ngoài có điều khoản riêng; xem `NOTICE.md` để biết nguồn và attribution. Dataset 5CD được sử dụng cho fine-tuning theo điều kiện truy cập/license của dataset.
+Source code của project theo license trong `LICENSE`.
 
----
+Nguồn bên ngoài có license/điều khoản riêng:
+
+- EasyOCR: https://github.com/JaidedAI/EasyOCR
+- EasyOCR custom model guide: https://github.com/JaidedAI/EasyOCR/blob/master/custom_model.md
+- UIT-HWDB public mirror: https://huggingface.co/datasets/blue7012/UIT_HWDB
+- UIT-HWDB original dataset / citation: https://github.com/nghiangh/UIT-HWDB-dataset
+
+Hugging Face mirror hiện khai báo **CC-BY-4.0**. Khi công bố kết quả, nên cite original UIT-HWDB paper và giữ provenance dataset revision/checkpoint SHA-256 trong report.
+
+Xem thêm `NOTICE.md` trước khi phân phối model/data.
